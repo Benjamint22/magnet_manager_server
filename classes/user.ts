@@ -21,7 +21,8 @@ export class User {
 }
 
 [
-    new User("benjamin", "99d043ab139acac92e5b50c8497b5aca")
+    new User("benjamin", "99d043ab139acac92e5b50c8497b5aca"),
+    new User("ice", "ba543da0ba46016ad88eea7e1ad1cf84"),
 ].forEach((user: User) => {
     User.users[user.Username] = user;
 });
