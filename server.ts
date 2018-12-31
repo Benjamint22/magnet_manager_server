@@ -3,7 +3,7 @@ import express from "express";
 import https, { ServerOptions } from "https";
 import fs from "fs";
 import cors, { CorsOptions } from "cors";
-import child_process, { ExecSyncOptionsWithStringEncoding, ExecSyncOptions, SpawnSyncReturns } from "child_process";
+import child_process, { SpawnSyncReturns } from "child_process";
 import crypto from "crypto";
 import { Service, ServiceStatus } from "./classes/service";
 import { UserSession } from "./classes/usersession";
@@ -19,13 +19,52 @@ const corsOptions: CorsOptions = {
     optionsSuccessStatus: 200,
 };
 
-const systemctlParser = /([a-zA-Z\-\@0-9]*\.service)\s+[a-zA-Z]+\s+[a-zA-Z]+\s+([a-zA-Z]+)\s+(.+)/g
 const app = express();
 const sessions: { [key:string]:UserSession } = {};
+let services: Service[] = [];
 
 function getSession(req: express.Request): UserSession {
     const body: {key: string} = req.body as any;
     return (sessions[body.key]);
+}
+
+function checkServiceExists(name: String): Service | undefined {
+    name = name.toLowerCase();
+    return services.find((element) => element.Name.toLowerCase() === name);
+}
+
+function refreshServiceStatus(service: Service): Promise<ServiceStatus> {
+    return new Promise<ServiceStatus>((resolve, reject) => {
+        const process: child_process.ChildProcess = child_process.spawn("systemctl", ["is-active", service.Name]);
+        process.stdout.on("data", (data: ServiceStatus) => {
+           services[services.indexOf(service)] = new Service(
+               service.Name,
+               data,
+               service.Description,
+           );
+           resolve(data);
+        })
+        process.stderr.on("data", (err) => {
+            reject(err);
+        });
+        process.on("exit", (code) => {
+            reject(`Exited with code ${code}.`);
+        });
+    });
+}
+
+async function refreshServicesList(): Promise<void> {
+    return new Promise<void>((resolve) => {
+        console.log("Refreshing services list...");
+        child_process.exec("./bash/listservices.sh", (_, stdout) => {
+            console.log("Parsing services list...")
+            const objServices: any[] = JSON.parse(stdout);
+            services = [];
+            objServices.forEach((service: any) => services.push(Service.fromJSON(service)));
+            console.log("Done parsing!");
+            resolve();
+        });
+    });
 }
 
 https.createServer(httpsOptions, app).listen(25569, () => {
@@ -61,16 +100,10 @@ app.route("/services/list").post((req, res) => {
         res.sendStatus(403);
         return;
     }
-    const systemctlOutput: string = child_process.execSync("systemctl --type=service --no-legend --quiet --no-page").toString();
-    let result;
-    let results: Service[] = [];
-    while (result = systemctlParser.exec(systemctlOutput)) {
-        results.push(new Service(result[1], result[2] as ServiceStatus, result[3].trimRight()));
-    }
-    res.send(results);
+    res.send(JSON.stringify(services.map((service) => service.toObject())));
 });
 
-app.route("/services/status").post((req, res) => {
+app.route("/services/status").post(async (req, res) => {
     if (!getSession(req)) {
         res.sendStatus(403);
         return;
@@ -80,18 +113,13 @@ app.route("/services/status").post((req, res) => {
         res.sendStatus(400);
         return;
     }
-    const systemctlOutput: SpawnSyncReturns<Buffer> = child_process.spawnSync("systemctl", ["status", serviceName], {});
-    if (systemctlOutput.stderr.length !== 0) {
+    const service: Service | undefined = checkServiceExists(serviceName);
+    if (service == undefined) {
         res.sendStatus(404);
         return;
     }
-    const execStatus: RegExpExecArray | null = /Active\:[^\(]+\(([^\)]+)\)/.exec(systemctlOutput.stdout.toString());
-    if (execStatus == null) {
-        res.sendStatus(500);
-        return;
-    }
-    const strStatus: string = execStatus[1];
-    res.send(strStatus.endsWith("exit-code") ? "failed" : strStatus);
+    const status: ServiceStatus = await refreshServiceStatus(service);
+    res.send(status);
 });
 
 app.route("/services/stop").post((req, res) => {
@@ -104,9 +132,14 @@ app.route("/services/stop").post((req, res) => {
         res.sendStatus(400);
         return;
     }
+    const service: Service | undefined = checkServiceExists(serviceName);
+    if (service == undefined) {
+        res.sendStatus(404);
+        return;
+    }
     const systemctlOutput: SpawnSyncReturns<Buffer> = child_process.spawnSync("systemctl", ["stop", serviceName], {});
     if (systemctlOutput.stderr.length !== 0) {
-        res.sendStatus(404);
+        res.status(500).send(systemctlOutput.stderr.toString());
         return;
     }
     res.sendStatus(200);
@@ -122,9 +155,14 @@ app.route("/services/start").post((req, res) => {
         res.sendStatus(400);
         return;
     }
+    const service: Service | undefined = checkServiceExists(serviceName);
+    if (service == undefined) {
+        res.sendStatus(404);
+        return;
+    }
     const systemctlOutput: SpawnSyncReturns<Buffer> = child_process.spawnSync("systemctl", ["start", serviceName], {});
     if (systemctlOutput.stderr.length !== 0) {
-        res.sendStatus(404);
+        res.status(500).send(systemctlOutput.stderr.toString());
         return;
     }
     res.sendStatus(200);
@@ -140,10 +178,20 @@ app.route("/services/restart").post((req, res) => {
         res.sendStatus(400);
         return;
     }
+    const service: Service | undefined = checkServiceExists(serviceName);
+    if (service == undefined) {
+        res.sendStatus(404);
+        return;
+    }
     const systemctlOutput: SpawnSyncReturns<Buffer> = child_process.spawnSync("systemctl", ["restart", serviceName], {});
     if (systemctlOutput.stderr.length !== 0) {
-        res.sendStatus(404);
+        res.status(500).send(systemctlOutput.stderr.toString());
         return;
     }
     res.sendStatus(200);
 });
+
+setInterval(() => {
+    refreshServicesList();
+}, 60 * 1000)
+refreshServicesList();

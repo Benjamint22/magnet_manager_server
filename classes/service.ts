@@ -1,6 +1,6 @@
 export enum ServiceStatus {
-    Running = "running",
-    Exited = "exited",
+    Active = "active",
+    Inactive = "inactive",
     Failed = "failed",
 }
 
@@ -21,9 +21,25 @@ export class Service {
         return this.description;
     }
 
+    public toObject(): any {
+        return {
+            name: this.name,
+            active: this.active.toString(),
+            description: this.description,
+        };
+    }
+
     constructor(name: string, active: ServiceStatus, description: string) {
         this.name = name;
         this.active = active;
         this.description = description;
+    }
+
+    static fromJSON(test: any): Service {
+        return new Service(
+            test["name"],
+            test["active"] as ServiceStatus,
+            test["description"]
+        );
     }
 }
